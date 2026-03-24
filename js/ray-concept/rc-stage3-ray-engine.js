@@ -235,44 +235,6 @@ function injectBridge(fa, fb, pipelineRef, cfg) {
 // "diameter" = perpendicular cylinder diameter; tolerance = diameter / 2.
 // Same-run co-axial faces have perp ≈ 0 → pass both. Cross-run faces (~125 mm offset) → blocked.
 
-function sixAxisFallback(f, pipelineRef, cfg, pass) {
-  // Pass 1 — 4 horizontal axes (±X, ±Y), tight radius
-  const p1Tol  = (cfg.sixAxP1Diameter ?? 6)   / 2;
-  const p1Dist =  cfg.sixAxP1MaxDist  ?? 20000;
-  const hAxes  = cardinalAxes().filter(ax => Math.abs(ax.z) < 0.5); // exclude ±Z
-
-  for (const ax of hAxes) {
-    if (f.connected) return;
-    _log?.(pass, 'ray-cast', f.compRefNo, { dir: ax, method: '6ax-p1', tol: p1Tol });
-    const hit = raycast(f.point, ax, f.compRefNo, cfg, { fixedTol: p1Tol, maxDistance: p1Dist });
-    if (hit) {
-      _log?.(pass, 'hit', f.compRefNo,
-        { target: hit.face.compRefNo, t: hit.t, faceKey: hit.face.faceKey, via: '6ax-p1' });
-      injectBridge(f, hit.face, pipelineRef, cfg);
-      return;
-    }
-  }
-
-  // Pass 2 — all 6 axes, wider radius (REDU gets special wider tolerance)
-  const p2Diam = f.compType === 'REDU'
-    ? (cfg.sixAxP2DiamREDU ?? 100)
-    : (cfg.sixAxP2Diameter ?? 25);
-  const p2Tol  = p2Diam / 2;
-  const p2Dist = cfg.sixAxP2MaxDist ?? 20000;
-
-  for (const ax of cardinalAxes()) {
-    if (f.connected) return;
-    _log?.(pass, 'ray-cast', f.compRefNo, { dir: ax, method: '6ax-p2', tol: p2Tol });
-    const hit = raycast(f.point, ax, f.compRefNo, cfg, { fixedTol: p2Tol, maxDistance: p2Dist });
-    if (hit) {
-      _log?.(pass, 'hit', f.compRefNo,
-        { target: hit.face.compRefNo, t: hit.t, faceKey: hit.face.faceKey, via: '6ax-p2' });
-      injectBridge(f, hit.face, pipelineRef, cfg);
-      return;
-    }
-  }
-}
-
 // ── PASS 0 — Gap Fill (≤ gapFillTolerance mm) ─────────────────────────────────
 
 function runPass0(pipelineRef, cfg) {
@@ -333,75 +295,143 @@ function rearmOletPassthroughs() {
   }
 }
 
-function runPass1(components, pipelineRef, cfg) {
+function runPass1A(pipelineRef, cfg) {
   const deTypes = cfg.deTypes;
   let bridged   = 0;
+  let newlyBridged;
 
-  // M1: Re-arm any OLET ep2 passthroughs that were missed because ep1 connected at init
+  do {
+    newlyBridged = 0;
+    rearmOletPassthroughs();
+
+    for (const f of _faces) {
+      if (f.connected || f.isStub) continue;
+      if (f.faceKey === 'bp') continue;
+
+      if (f._isOletDownstream && f._passthroughDir) {
+        _log?.('S3-P1A', 'ray-cast', f.compRefNo,
+          { origin: f.point, dir: f._passthroughDir, method: 'olet-passthrough' });
+        const hit = raycast(f.point, f._passthroughDir, f.compRefNo, cfg, { fixedTol: cfg.primaryRayRadius ?? 3, maxDistance: cfg.primaryRayMaxDist ?? 20000 });
+        if (hit) {
+          _log?.('S3-P1A', 'hit', f.compRefNo,
+            { target: hit.face.compRefNo, t: hit.t, faceKey: hit.face.faceKey });
+          injectBridge(f, hit.face, pipelineRef, cfg);
+          newlyBridged++;
+          continue; // Passthrough succeeded
+        }
+        // If passthrough misses, we log and fall through to let other passes handle it
+        _log?.('S3-P1A', 'olet-passthrough-miss-fallback', f.compRefNo,
+          { origin: f.point, faceKey: f.faceKey });
+        continue; // Pass to B/C if missed
+      }
+
+      if (deTypes.includes(f.compType)) {
+        const sibling = _faces.find(
+          s => s.compRefNo === f.compRefNo && s.id !== f.id && s.connected
+        );
+        if (sibling) {
+          _log?.('S3-P1A', 'early-exit', f.compRefNo,
+            { reason: 'DE type, sibling connected', faceKey: f.faceKey });
+          continue;
+        }
+      }
+
+      const axDir = inferDir(f, _faces);
+      if (axDir) {
+        _log?.('S3-P1A', 'ray-cast', f.compRefNo,
+          { origin: f.point, dir: axDir, method: 'axis-vector' });
+        const hit = raycast(f.point, axDir, f.compRefNo, cfg, { fixedTol: cfg.primaryRayRadius ?? 3, maxDistance: cfg.primaryRayMaxDist ?? 20000 });
+
+        if (hit) {
+          _log?.('S3-P1A', 'hit', f.compRefNo,
+            { target: hit.face.compRefNo, t: hit.t, faceKey: hit.face.faceKey });
+          injectBridge(f, hit.face, pipelineRef, cfg);
+          newlyBridged++;
+        } else {
+          _log?.('S3-P1A', 'miss', f.compRefNo,
+            { origin: f.point, faceKey: f.faceKey });
+        }
+      }
+    }
+    bridged += newlyBridged;
+  } while (newlyBridged > 0);
+
+  return bridged;
+}
+
+function runPass1B(pipelineRef, cfg) {
+  let bridged   = 0;
+  const p1Tol  = (cfg.sixAxP1Diameter ?? 12) / 2;
+  const p1Dist =  cfg.sixAxP1MaxDist  ?? 20000;
+  const hAxes  = cardinalAxes().filter(ax => Math.abs(ax.z) < 0.5);
+
   rearmOletPassthroughs();
 
   for (const f of _faces) {
     if (f.connected || f.isStub) continue;
-    if (f.faceKey === 'bp') continue; // Pass 2 handles branch points
+    if (f.faceKey === 'bp') continue;
 
-    // B6: OLET downstream — use armed passthrough direction if available
-    // B7: When passthrough misses (e.g. garbage direction from co-located ep1/partner),
-    //     fall through to 6-axis fallback instead of continuing. This fixes the case
-    //     where OLET ep1 and its upstream partner share the same point bucket: the
-    //     computed passthrough direction is near-zero and always misses, leaving the
-    //     downstream OLET face orphaned and allowing downstream components (e.g. REDU)
-    //     to fire long false-positive rays to unrelated elbows.
-    if (f._isOletDownstream && f._passthroughDir) {
-      _log?.('S3-P1', 'ray-cast', f.compRefNo,
-        { origin: f.point, dir: f._passthroughDir, method: 'olet-passthrough' });
-      const hit = raycast(f.point, f._passthroughDir, f.compRefNo, cfg);
+    // Skip DE early exit again to be safe
+    if (cfg.deTypes.includes(f.compType)) {
+      const sibling = _faces.find(s => s.compRefNo === f.compRefNo && s.id !== f.id && s.connected);
+      if (sibling) continue;
+    }
+
+    let hit = null;
+    for (const ax of hAxes) {
+      _log?.('S3-P1B', 'ray-cast', f.compRefNo, { dir: ax, method: '6ax-p1', tol: p1Tol });
+      hit = raycast(f.point, ax, f.compRefNo, cfg, { fixedTol: p1Tol, maxDistance: p1Dist });
       if (hit) {
-        _log?.('S3-P1', 'hit', f.compRefNo,
-          { target: hit.face.compRefNo, t: hit.t, faceKey: hit.face.faceKey });
+        _log?.('S3-P1B', 'hit', f.compRefNo,
+          { target: hit.face.compRefNo, t: hit.t, faceKey: hit.face.faceKey, via: '6ax-p1' });
         injectBridge(f, hit.face, pipelineRef, cfg);
         bridged++;
-        continue; // B7: only skip 6-axis when passthrough actually hits
-      }
-      // Passthrough missed — fall through to 6-axis fallback below (B7)
-      _log?.('S3-P1', 'olet-passthrough-miss-fallback', f.compRefNo,
-        { origin: f.point, faceKey: f.faceKey });
-    }
-
-    // Early Exit: DE type with one side already connected
-    if (deTypes.includes(f.compType)) {
-      const sibling = _faces.find(
-        s => s.compRefNo === f.compRefNo && s.id !== f.id && s.connected
-      );
-      if (sibling) {
-        _log?.('S3-P1', 'early-exit', f.compRefNo,
-          { reason: 'DE type, sibling connected', faceKey: f.faceKey });
-        continue;
+        break;
       }
     }
 
-    // Primary ray: component's own axis direction (outward)
-    let hit = null;
-    const axDir = inferDir(f, _faces);
-    if (axDir) {
-      _log?.('S3-P1', 'ray-cast', f.compRefNo,
-        { origin: f.point, dir: axDir, method: 'axis-vector' });
-      hit = raycast(f.point, axDir, f.compRefNo, cfg);
-    }
-
-    // Fallback: 2-pass 6-axis (tight horizontal → wider all-axes)
     if (!hit) {
-      sixAxisFallback(f, pipelineRef, cfg, 'S3-P1');
-    } else {
-      _log?.('S3-P1', 'hit', f.compRefNo,
-        { target: hit.face.compRefNo, t: hit.t, faceKey: hit.face.faceKey });
-      injectBridge(f, hit.face, pipelineRef, cfg);
+        _log?.('S3-P1B', 'miss', f.compRefNo, { origin: f.point, faceKey: f.faceKey });
+    }
+  }
+  return bridged;
+}
+
+function runPass1C(pipelineRef, cfg) {
+  let bridged   = 0;
+  const p2Dist = cfg.sixAxP2MaxDist ?? 20000;
+
+  rearmOletPassthroughs();
+
+  for (const f of _faces) {
+    if (f.connected || f.isStub) continue;
+    if (f.faceKey === 'bp') continue;
+
+    const p2Diam = f.compType === 'REDU'
+      ? (cfg.sixAxP2DiamREDU ?? 150)
+      : (cfg.sixAxP2Diameter ?? 50);
+    const p2Tol  = p2Diam / 2;
+
+    if (cfg.deTypes.includes(f.compType)) {
+      const sibling = _faces.find(s => s.compRefNo === f.compRefNo && s.id !== f.id && s.connected);
+      if (sibling) continue;
     }
 
-    if (hit || f.connected) {
-      bridged++;
-    } else {
-      _log?.('S3-P1', 'miss', f.compRefNo,
-        { origin: f.point, faceKey: f.faceKey });
+    let hit = null;
+    for (const ax of cardinalAxes()) {
+      _log?.('S3-P1C', 'ray-cast', f.compRefNo, { dir: ax, method: '6ax-p2', tol: p2Tol });
+      hit = raycast(f.point, ax, f.compRefNo, cfg, { fixedTol: p2Tol, maxDistance: p2Dist });
+      if (hit) {
+        _log?.('S3-P1C', 'hit', f.compRefNo,
+          { target: hit.face.compRefNo, t: hit.t, faceKey: hit.face.faceKey, via: '6ax-p2' });
+        injectBridge(f, hit.face, pipelineRef, cfg);
+        bridged++;
+        break;
+      }
+    }
+
+    if (!hit) {
+        _log?.('S3-P1C', 'miss', f.compRefNo, { origin: f.point, faceKey: f.faceKey });
     }
   }
   return bridged;
@@ -495,23 +525,8 @@ function runPass2(pipelineRef, cfg) {
 
 function runPass3(pipelineRef, cfg) {
   let bridged = 0;
-
-  for (const f of _faces) {
-    if (f.connected)        continue;
-    if (f.isStub)           continue;
-    if (f.faceKey === 'bp') continue;
-
-    _log?.('S3-P3', 'scanning', f.compRefNo, { faceKey: f.faceKey, origin: f.point });
-
-    sixAxisFallback(f, pipelineRef, cfg, 'S3-P3');
-
-    if (f.connected) {
-      bridged++;
-    } else {
-      _log?.('S3-P3', 'miss', f.compRefNo,
-        { origin: f.point, faceKey: f.faceKey });
-    }
-  }
+  // This can now just call the same logic as 1C for the cleanup sweep
+  bridged += runPass1C(pipelineRef, cfg);
   return bridged;
 }
 
@@ -594,8 +609,16 @@ export function runStage3(components, pipelineRef, logFn = () => {}) {
   }
 
   if (cfg.passEnabled.p1) {
-    stats.p1 = runPass1(components, pipelineRef, cfg);
-    logFn('S3-P1', 'pass-complete', '', { bridged: stats.p1 });
+    stats.p1A = runPass1A(pipelineRef, cfg);
+    logFn('S3-P1A', 'pass-complete', '', { bridged: stats.p1A });
+
+    stats.p1B = runPass1B(pipelineRef, cfg);
+    logFn('S3-P1B', 'pass-complete', '', { bridged: stats.p1B });
+
+    stats.p1C = runPass1C(pipelineRef, cfg);
+    logFn('S3-P1C', 'pass-complete', '', { bridged: stats.p1C });
+
+    stats.p1 = stats.p1A + stats.p1B + stats.p1C;
   }
 
   if (cfg.passEnabled.p2) {
