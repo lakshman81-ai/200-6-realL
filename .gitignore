@@ -1,0 +1,9 @@
+node_modules/
+backup/
+.gemini/
+Public/Output/
+.vscode/
+.idea/
+*.log
+dist/
+nul

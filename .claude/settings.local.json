@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(findstr \"react\")",
+      "Bash(dir jsuisimp-analysis-tab.js)",
+      "Bash(dir jsapp.js)",
+      "Bash(dir /b js)",
+      "Bash(npm run dev)",
+      "Bash(find /c/Users/reall/Downloads/200 -type f \\\\\\(-name *ray* -o -name *pcf* \\\\\\) ! -path */node_modules/*)",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(find C:Code200-6 -type f \\\\\\(-name *.vue -o -name *.jsx -o -name *.tsx \\\\\\))",
+      "Bash(where node:*)",
+      "Bash(where npx:*)",
+      "Bash(where vite:*)",
+      "Bash(ls C:/Code/200-6/node_modules/.bin/vite*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
