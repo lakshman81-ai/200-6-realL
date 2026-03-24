@@ -78,14 +78,18 @@ const _defaults = {
   proximityMaxDist:  10000,  // mm — hard max distance for P2 proximity fallback
   proximityMinDot:   0.85,   // min dot product (≈32°) for P2 proximity alignment gate
 
+  // ── Stage 3: Ray Engine — Primary Axis (Pass A) ────────────────────────
+  primaryRayRadius: 3,       // mm — Pass A tolerance (radius 3 mm -> diameter 6 mm)
+  primaryRayMaxDist: 20000,  // mm — Pass A max ray distance
+
   // ── Stage 3: Ray Engine — 6-axis fallback (P1 + P3) ─────────────────────
   // Two-pass helper: Pass 1 = ±X/±Y only (horizontal), tight diameter;
   // Pass 2 = all 6 axes, wider diameter (REDU gets extra-wide).
   // "Diameter" = perpendicular cylinder diameter; tolerance radius = diameter / 2.
-  sixAxP1Diameter:  6,      // mm — Pass 1 cylinder diameter (radius 3 mm); ±X, ±Y only
+  sixAxP1Diameter:  12,      // mm — Pass 1 cylinder diameter (radius 3 mm); ±X, ±Y only
   sixAxP1MaxDist:   20000,  // mm — Pass 1 max ray distance
-  sixAxP2Diameter:  25,     // mm — Pass 2 cylinder diameter (radius 12.5 mm); all 6 axes
-  sixAxP2DiamREDU:  100,    // mm — Pass 2 cylinder diameter for REDU source face (radius 50 mm)
+  sixAxP2Diameter:  50,     // mm — Pass 2 cylinder diameter (radius 12.5 mm); all 6 axes
+  sixAxP2DiamREDU:  150,    // mm — Pass 2 cylinder diameter for REDU source face (radius 50 mm)
   sixAxP2MaxDist:   20000,  // mm — Pass 2 max ray distance
 
   // ── Stage 3: Pass control ─────────────────────────────────────────────────
